@@ -51,7 +51,7 @@ Debug APK 位于：
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-推送 `v*` tag 后，GitHub Actions 会使用仓库的加密签名 secrets 构建 APK、验证签名、生成 SHA-256 校验文件并发布 Release。
+推送 `v*` tag 后，GitHub Actions 会使用仓库的加密签名 secrets 构建 APK、验证签名、核对固定的发布证书、生成 SHA-256 校验文件并发布 Release。签名身份和恢复原则见 [`SIGNING.md`](SIGNING.md)。
 
 ## 项目与资源来源
 

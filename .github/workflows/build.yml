@@ -99,14 +99,20 @@ jobs:
 
       - name: Verify signature and prepare files
         run: |
-          verification="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk)"
+          apk="app/build/outputs/apk/release/app-release.apk"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version_name="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk" | awk -F"'" '/^package:/{print $6; exit}')"
+            test -n "$version_name"
+            test "$GITHUB_REF_NAME" = "v$version_name"
+          fi
+          verification="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk")"
           printf '%s\n' "$verification"
           actual_certificate="$(printf '%s\n' "$verification" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
           expected_certificate="$(openssl x509 -in signing/release-certificate.pem -outform DER | sha256sum | cut -d ' ' -f 1)"
           test -n "$actual_certificate"
           test "$actual_certificate" = "$expected_certificate"
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/Action-Launcher-Enhanced-${GITHUB_REF_NAME}.apk"
+          cp "$apk" "dist/Action-Launcher-Enhanced-${GITHUB_REF_NAME}.apk"
           cd dist
           sha256sum "Action-Launcher-Enhanced-${GITHUB_REF_NAME}.apk" > SHA256SUMS.txt
 

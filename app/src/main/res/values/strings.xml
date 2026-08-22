@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Action Launcher Enhanced</string>
+    <string name="xposed_description">改善 Action Launcher 在 Android 16 上返回桌面时的壁纸与内容动画。</string>
+</resources>

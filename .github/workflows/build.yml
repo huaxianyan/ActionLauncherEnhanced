@@ -99,7 +99,7 @@ jobs:
 
       - name: Verify signature and prepare files
         run: |
-          verification="$(apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk)"
+          verification="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk)"
           printf '%s\n' "$verification"
           actual_certificate="$(printf '%s\n' "$verification" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
           expected_certificate="$(openssl x509 -in signing/release-certificate.pem -outform DER | sha256sum | cut -d ' ' -f 1)"

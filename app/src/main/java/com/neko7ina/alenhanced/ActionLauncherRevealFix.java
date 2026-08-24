@@ -1,5 +1,7 @@
 package com.neko7ina.alenhanced;
 
+import android.app.KeyguardManager;
+import android.content.Context;
 import android.util.Log;
 import android.view.View;
 
@@ -23,6 +25,7 @@ final class ActionLauncherRevealFix {
     private final AtomicBoolean runtimeErrorLogged = new AtomicBoolean();
     private final AtomicBoolean appliedLogged = new AtomicBoolean();
     private final AtomicBoolean homeTimingLogged = new AtomicBoolean();
+    private final AtomicBoolean keyguardStateLogged = new AtomicBoolean();
 
     ActionLauncherRevealFix(XposedModule module) {
         this.module = module;
@@ -32,6 +35,8 @@ final class ActionLauncherRevealFix {
         Class<?> controllerClass = classLoader.loadClass(REVEAL_CONTROLLER_CLASS);
         Class<?> stateClass = classLoader.loadClass(REVEAL_STATE_CLASS);
 
+        Method onStart = controllerClass.getDeclaredMethod("onStart");
+        onStart.setAccessible(true);
         Method scheduleReveal = controllerClass.getDeclaredMethod(
                 "b", long.class, String.class);
         scheduleReveal.setAccessible(true);
@@ -40,9 +45,44 @@ final class ActionLauncherRevealFix {
         lazyState.setAccessible(true);
         Method getValue = lazyState.getType().getMethod("getValue");
         getValue.setAccessible(true);
+        Field deviceState = controllerClass.getDeclaredField("z");
+        deviceState.setAccessible(true);
+        Field deviceContext = deviceState.getType().getDeclaredField("a");
+        deviceContext.setAccessible(true);
+        Field cachedKeyguardState = deviceState.getType().getDeclaredField("c");
+        cachedKeyguardState.setAccessible(true);
+        Method getCachedValue = cachedKeyguardState.getType().getMethod("d");
+        getCachedValue.setAccessible(true);
+        Method setCachedValue = cachedKeyguardState.getType().getMethod(
+                "k", Object.class);
+        setCachedValue.setAccessible(true);
 
         Field rootView = stateClass.getDeclaredField("a");
         rootView.setAccessible(true);
+
+        module.hook(onStart)
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .intercept(chain -> {
+                    try {
+                        Object device = deviceState.get(chain.getThisObject());
+                        Object keyguardState = cachedKeyguardState.get(device);
+                        Object cachedState = getCachedValue.invoke(keyguardState);
+                        Context context = (Context) deviceContext.get(device);
+                        KeyguardManager keyguardManager =
+                                context.getSystemService(KeyguardManager.class);
+                        Boolean actualState = keyguardManager.isKeyguardLocked();
+                        if (!actualState.equals(cachedState)) {
+                            setCachedValue.invoke(keyguardState, actualState);
+                            if (keyguardStateLogged.compareAndSet(false, true)) {
+                                module.log(Log.INFO, TAG,
+                                        "Synchronized Action Launcher lock state");
+                            }
+                        }
+                    } catch (Throwable error) {
+                        logRuntimeErrorOnce(error);
+                    }
+                    return chain.proceed();
+                });
 
         module.hook(scheduleReveal)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)

@@ -4,6 +4,10 @@
 
 Action Launcher Enhanced 是一个面向 Action Launcher 的 LSPosed 增强模块。目前用于改善 Android 16 上从应用返回桌面时的壁纸与内容动画。
 
+## 开发交接
+
+当前主线、历史验证边界和下一步见 [交接记录](docs/STATUS.md)。
+
 ## 功能
 
 - 修复按 Home 返回 Action Launcher 时壁纸短暂变黑的问题；

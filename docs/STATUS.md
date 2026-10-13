@@ -11,6 +11,18 @@
 - [第三方资源](../THIRD_PARTY_NOTICES.md)：资源来源与许可。
 - 机器、设备和本地操作约定见本地 `AGENTS.md`。
 
+## STATUS-004：README 按 readme-standard 重整
+
+- 日期：2026-10-14。
+- 结构改为固定骨架：图标与标题居中（模块自身 `mipmap-xxxhdpi` 图标入
+  `docs/images/icon.png`）、定位语、特性、适用环境、安装、设计与实现
+  （含安全边界与构建）、文档索引、项目与资源来源。
+- 定位语去掉「Android 16 上」过时限定；原「开发交接」节并入文档索引。
+- 新增 Obtainium 导入按钮：Application ID `com.neko7ina.alenhanced`，徽章图片
+  `docs/images/obtainium-badge.png` 与链接格式沿用输入法项目的既有形态；
+  安装节补 min SDK 35 / target SDK 36 摘要，与构建配置核对一致。
+- chinese-tech-writing 三个扫描脚本（typography/clauses/style）全部通过。
+
 ## STATUS-003：修复 AL 53.0 返回键触发"回桌面动画"
 
 - 日期：2026-10-14。

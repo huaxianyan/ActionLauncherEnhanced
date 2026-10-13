@@ -15,8 +15,17 @@ import io.github.libxposed.api.XposedModule;
 /** Removes the 160 ms fully-visible frame before Action Launcher starts its own reveal. */
 final class ActionLauncherRevealFix {
     private static final String TAG = "ActionLauncherEnhanced";
-    private static final String REVEAL_CONTROLLER_CLASS = "A0.k";
-    private static final String REVEAL_STATE_CLASS = "A0.f";
+    /**
+     * 混淆符号随 Action Launcher 版本变化，更新后需重新定位：
+     * - reveal controller（52.0 为 A0.k）：含 onStart()V 与 b(JLjava/lang/String;)V，
+     *   通过 const-string "onStart()" / "onHomeIntent()" 的 invoke 目标定位；
+     * - reveal state（52.0 为 A0.f）：controller.C 字段 getValue() 的返回类型，
+     *   字段 a 为 root View（构造器第二参数传入）。
+     * 其余方法/字段名（onStart、b、C、z、z.a、z.c、z.c.d()、z.c.k(Object)、state.a）
+     * 在 52.0 与 53.0 中一致，若失效按上述方式重新核对。
+     */
+    private static final String REVEAL_CONTROLLER_CLASS = "l13";
+    private static final String REVEAL_STATE_CLASS = "k13";
     private static final String ON_START_SOURCE = "onStart()";
     private static final String ON_HOME_INTENT_SOURCE = "onHomeIntent()";
 

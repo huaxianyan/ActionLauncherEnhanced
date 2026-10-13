@@ -30,6 +30,12 @@ public final class MainModule extends XposedModule {
         if (ACTION_LAUNCHER_PACKAGE.equals(param.getPackageName())
                 && ACTION_LAUNCHER_INSTALLED.compareAndSet(false, true)) {
             try {
+                new ActionLauncherBackFix(this).install(param.getClassLoader());
+            } catch (Throwable error) {
+                log(Log.ERROR, TAG,
+                        "Action Launcher back hook unavailable", error);
+            }
+            try {
                 new ActionLauncherRevealFix(this).install(param.getClassLoader());
             } catch (Throwable error) {
                 ACTION_LAUNCHER_INSTALLED.set(false);

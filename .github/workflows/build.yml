@@ -112,14 +112,15 @@ jobs:
           test -n "$actual_certificate"
           test "$actual_certificate" = "$expected_certificate"
           mkdir -p dist
-          cp "$apk" "dist/Action-Launcher-Enhanced-${GITHUB_REF_NAME}.apk"
+          asset="ActionLauncher-Enhanced-${GITHUB_REF_NAME#v}.apk"
+          cp "$apk" "dist/$asset"
           cd dist
-          sha256sum "Action-Launcher-Enhanced-${GITHUB_REF_NAME}.apk" > SHA256SUMS.txt
+          sha256sum "$asset" > SHA256SUMS.txt
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Action-Launcher-Enhanced-${{ github.ref_name }}
+          name: ActionLauncher-Enhanced-${{ github.ref_name }}
           path: dist/*
           if-no-files-found: error
 

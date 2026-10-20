@@ -39,9 +39,16 @@ final class ActionLauncherBackFix {
 
     private Class<?> launcherActivityClass;
     private Method launcherOnBackPressed;
+    /** Home/back 回桌面入口的锁屏缓存复位（RevealFix 提供，可为 null）。 */
+    private final Runnable beforeReentry;
 
     ActionLauncherBackFix(XposedModule module) {
+        this(module, null);
+    }
+
+    ActionLauncherBackFix(XposedModule module, Runnable beforeReentry) {
         this.module = module;
+        this.beforeReentry = beforeReentry;
     }
 
     void install(ClassLoader classLoader) throws ReflectiveOperationException {
@@ -62,6 +69,7 @@ final class ActionLauncherBackFix {
                         return chain.proceed();
                     }
                     try {
+                        runBeforeReentry();
                         launcherOnBackPressed.invoke(self);
                         if (handledLogged.compareAndSet(false, true)) {
                             module.log(Log.INFO, TAG,
@@ -79,6 +87,35 @@ final class ActionLauncherBackFix {
                     }
                 });
 
+        try {
+            // ey2 不覆写 onNewIntent（ek2 链上无声明）；实际实现在
+            // com.actionlauncher.ActionLauncherActivity（非混淆，内部转发 hn0）。
+            Method onNewIntent = classLoader.loadClass(
+                    "com.actionlauncher.ActionLauncherActivity")
+                    .getDeclaredMethod("onNewIntent", android.content.Intent.class);
+            onNewIntent.setAccessible(true);
+            module.hook(onNewIntent)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        runBeforeReentry();
+                        return chain.proceed();
+                    });
+        } catch (Throwable error) {
+            module.log(Log.INFO, TAG,
+                    "onNewIntent hook unavailable; race heal inactive: " + error);
+        }
+
         module.log(Log.INFO, TAG, "Action Launcher back hook installed");
+    }
+
+    private void runBeforeReentry() {
+        if (beforeReentry == null) {
+            return;
+        }
+        try {
+            beforeReentry.run();
+        } catch (Throwable ignored) {
+            // 复位失败时由接收器兑底，不阻断回桌面路径。
+        }
     }
 }

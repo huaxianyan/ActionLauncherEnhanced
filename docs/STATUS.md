@@ -2,7 +2,7 @@
 
 ## 当前主线
 
-维护 Android 17 与 Action Launcher 53.0 的返回桌面体验修复：Home 起播时机（壁纸黑屏与内容闪烁）和返回键路径（强制预测性返回导致抽屉不关闭）。适配限于已验证的 Hook，不扩大系统或 Launcher 的修改范围。
+维护 Android 17 与 Action Launcher 53.0 的返回桌面体验修复：Home 起播时机（壁纸黑屏与内容闪烁）、返回键路径（强制预测性返回导致抽屉不关闭）和解锁后 Home 的 reveal 竞态。适配限于已验证的 Hook，不扩大系统或 Launcher 的修改范围。
 
 ## 接手入口
 
@@ -10,6 +10,43 @@
 - [签名说明](../SIGNING.md)：发布签名身份和恢复原则。
 - [第三方资源](../THIRD_PARTY_NOTICES.md)：资源来源与许可。
 - 机器、设备和本地操作约定见本地 `AGENTS.md`。
+
+## STATUS-005：修复解锁后 Home 无 reveal 的竞态与补放
+
+- 日期：2026-10-20。
+- 现象：开应用 → 锁屏 → 解锁 → 立刻按 Home，偶发（概率随打开来源：抽屉/
+  侧边栏开应用比桌面图标更易触发）桌面无 reveal 动画。
+- 排障：链路探针（l13.onStart 锁屏缓存/计时门、l13.b(delay,source) 调用链、
+  reveal 偏好链 w.a.[o|n|m]、root 透明度与动画状态、动画收尾 settle 探针）
+  + 失败案例屏幕录制逐帧比对，确认两种失败模式：
+  1. 竞态跳过（主因）：AL 53.0 在 Android 17 收不到自己注册的
+     NOT_EXPORTED USER_PRESENT，锁屏缓存停在「已锁定」；解锁后按 Home 时
+     模块接收器把缓存复位并倒填 E，但实测 Android 17 上该路径的
+     onStart 可能先于 onNewIntent 执行，AL 的 onStart 门先读到旧缓存、
+     直接跳过 reveal 调度，复位再快也无效。
+     注：`ey2` 不声明 onNewIntent（曾误钩报 NoSuchMethodException），
+     真实实现在 `com.actionlauncher.ActionLauncherActivity`（非混淆，
+     内部转发 hn0.onNewIntent）。
+  2. 视觉丟失（录屏曾见）：reveal 链路引擎侧完整（b(160) 调度、
+     ObjectAnimator running、settle alpha=1.0）但屏幕上工作区图标未出现。
+     未定位到稳定根因，复测中未再出现；保留 settle 探针可立即鉴别。
+- 修复（RevealFix + BackFix 联动）：
+  - Home 入口（`ActionLauncherActivity.onNewIntent`）与返回入口
+    （`Activity.finishAfterTransition`）都先调 `healBeforeReentry()`：
+    发现「缓存=已锁定、KeyguardManager 实报未锁定」时当场复位缓存并
+    倒填 E。
+  - 若该次 onStart 的调度已被旧缓存跳过，在 onNewIntent 里补放 AL 自己的
+    调度（invoke 已验证的 `l13.b(160, "onStart()")`，与其 postDelayed 后
+    调用的是同一方法），b() 钩子的 alpha0/pending 机制照常接管；不新增
+    动画逻辑。onStart 已正常调度（pending 已置位）时不重复。
+  - 探针开关 `DBG`：当前保持 true（含 b()/onStart/settle 全链路日志），
+    稳定期后应关闭。
+- 日志验证：`Healed lock cache before Home re-entry` +
+  `replayed skipped reveal scheduling` 在用户压测中真实触发 4 次，每次
+  reveal settle alpha=1.0，动画均可见。
+- 真机验证：抽屉/侧边栏/桌面图标三种来源 × 解锁后立刻 Home 均正常；
+  解锁本身不播 reveal 的压制行为未受影响；常规 Home/返回路径无回归。
+- 注意：模块接收器复位/倒填仍是基础路径；补放只在竞态发生时生效。
 
 ## STATUS-004：README 按 readme-standard 重整
 

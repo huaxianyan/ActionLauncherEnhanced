@@ -1,17 +1,33 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
 
-fun signingValue(environmentName: String, propertyName: String): String? =
+// 签名材料不入库：优先环境变量，其次 -P 属性，最后读本机 signing.properties
+// （默认 ~/.android/signing/<项目名>/signing.properties，可用 -PsigningProperties=... 覆盖）。
+val localSigningFile = providers.gradleProperty("signingProperties")
+    .orNull
+    ?.let(::file)
+    ?: File(System.getProperty("user.home"), ".android/signing/ActionLauncherEnhanced/signing.properties")
+val localSigning: Properties? = localSigningFile
+    .takeIf { it.isFile }
+    ?.let { file -> Properties().apply { file.inputStream().use { load(it) } } }
+
+fun signingValue(environmentName: String, propertyName: String, localKey: String): String? =
     providers.environmentVariable(environmentName)
         .orElse(providers.gradleProperty(propertyName))
         .orNull
+        ?: localSigning?.getProperty(localKey)?.takeIf { it.isNotBlank() }
 
-val releaseStoreFile = signingValue("RELEASE_STORE_FILE", "releaseStoreFile")
-val releaseStorePassword = signingValue("RELEASE_STORE_PASSWORD", "releaseStorePassword")
-val releaseKeyAlias = signingValue("RELEASE_KEY_ALIAS", "releaseKeyAlias")
-val releaseKeyPassword = signingValue("RELEASE_KEY_PASSWORD", "releaseKeyPassword")
-val releaseStoreType = signingValue("RELEASE_STORE_TYPE", "releaseStoreType") ?: "PKCS12"
+val releaseStoreFile = signingValue("RELEASE_STORE_FILE", "releaseStoreFile", "storeFile")
+val releaseStorePassword =
+    signingValue("RELEASE_STORE_PASSWORD", "releaseStorePassword", "storePassword")
+val releaseKeyAlias = signingValue("RELEASE_KEY_ALIAS", "releaseKeyAlias", "keyAlias")
+val releaseKeyPassword =
+    signingValue("RELEASE_KEY_PASSWORD", "releaseKeyPassword", "keyPassword")
+val releaseStoreType =
+    signingValue("RELEASE_STORE_TYPE", "releaseStoreType", "storeType") ?: "PKCS12"
 val hasReleaseSigning = listOf(
     releaseStoreFile,
     releaseStorePassword,
@@ -49,6 +65,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 本机 Debug 包同样用正式身份签名，避免与发布包不能互相覆盖安装。
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
         release {
             isMinifyEnabled = false
             if (hasReleaseSigning) {

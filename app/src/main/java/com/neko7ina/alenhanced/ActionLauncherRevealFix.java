@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.util.Log;
 import android.view.View;
 
@@ -49,10 +50,14 @@ final class ActionLauncherRevealFix {
      * - 但随后按 Home 的 reveal 也被同一缓存压制。模块自注册 RECEIVER_EXPORTED
      *   接收器补收 USER_PRESENT：复位锁屏缓存，并把 controller 的开始时刻字段
      *   E 倒填为很久以前，让后续 Home 的 onStart 过 2s 的 debounce 门。
-     *   实测该广播的投递总在 AL 的解锁 onStart 之后，因此不会把解锁 reveal
-     *   提前放出；缓存已复位时不重复干预。
+     *   普通解锁沿用该行为，但广播与 onStart 的顺序并不固定。
+     * - 屏保和 AOD 周期保留锁屏缓存直到 USER_PRESENT，随后保留原生解锁
+     *   debounce，不倒填 E。充电屏保缺少 SCREEN_ON 缓存置位，AOD 直解
+     *   还可能重复 onStart，两者都不能在解锁时提前解除 debounce。
+     *   真正的 Home 回桌面入口再解除 debounce 并按需补放。
      */
     private static final long UNLOCK_HEAL_DELAY_MS = 1000L;
+    private static final long REENTRY_BACKDATE_MS = 60_000L;
 
     private final XposedModule module;
     private final AtomicBoolean delayedOnStartPending = new AtomicBoolean();
@@ -64,6 +69,7 @@ final class ActionLauncherRevealFix {
     private final AtomicBoolean unlockReceiverAttached = new AtomicBoolean();
     private final AtomicBoolean earlyRestoreLogged = new AtomicBoolean();
     private final AtomicBoolean raceHealLogged = new AtomicBoolean();
+    private final UnlockRevealCycle unlockCycle = new UnlockRevealCycle();
 
     private Method getCachedValue;
     private Method setCachedValue;
@@ -103,8 +109,6 @@ final class ActionLauncherRevealFix {
     private Object healKeyguardState;
     /** 我们 hook 到的 controller 实例（弱引用，防泄漏），解锁广播时刷新其 E。 */
     private final List<WeakReference<Object>> controllers = new ArrayList<>();
-    /** 模块复位锁屏缓存的时刻（解锁信号），毫秒；仅主线程读写。 */
-    private long unlockFlipTime;
 
     ActionLauncherRevealFix(XposedModule module) {
         this.module = module;
@@ -199,6 +203,14 @@ final class ActionLauncherRevealFix {
                                 chain.getThisObject()));
                         boolean cachedLocked = Boolean.TRUE.equals(cached);
                         boolean actualLocked = Boolean.TRUE.equals(actual);
+                        if (unlockCycle.waitingForUnlock() && !cachedLocked) {
+                            cachedValueSetter.invoke(state, Boolean.TRUE);
+                            cachedLocked = true;
+                            if (DBG) {
+                                module.log(Log.INFO, TAG,
+                                        "[dbg] preserved dream/AOD unlock cache");
+                            }
+                        }
                         if (cachedLocked == actualLocked) {
                             // 缓存与实际一致，不干预。
                         } else if (cachedLocked && !actualLocked) {
@@ -328,7 +340,8 @@ final class ActionLauncherRevealFix {
                 });
 
         if (DBG) {
-            module.log(Log.INFO, TAG, "[dbg] reveal hook installed");
+            module.log(Log.INFO, TAG,
+                    "[dbg] reveal hook installed; ordered dream/AOD unlock timing enabled");
         } else {
             module.log(Log.INFO, TAG, "Action Launcher reveal hook installed");
         }
@@ -423,8 +436,8 @@ final class ActionLauncherRevealFix {
 
     /**
      * 解锁信号命中（主线程于 onReceive）：每个已知 controller 对应的锁屏缓存
-     * 复位为「未锁定」，并把开始时刻倒填为很久以前，让后续 Home 的 onStart
-     * 通过 debounce 门。等效于 AL 自己那个收不到广播的处理逻辑。
+     * 复位为「未锁定」。屏保与 AOD 解锁保留当前时刻作为原生 debounce 起点，
+     * 其他解锁沿用原有 Home 时序修复。显式 Home 入口负责解除解锁 debounce。
      */
     private void onUserPresent(KeyguardManager keyguardManager) {
         if (keyguardManager.isKeyguardLocked()) {
@@ -434,8 +447,8 @@ final class ActionLauncherRevealFix {
             return;
         }
         long now = System.currentTimeMillis();
-        unlockFlipTime = now;
-        long backdated = now - 60000L;
+        boolean dreamUnlock = unlockCycle.onUserPresent();
+        long revealStart = dreamUnlock ? now : now - REENTRY_BACKDATE_MS;
         for (Iterator<WeakReference<Object>> it = controllers.iterator(); it.hasNext();) {
             Object controller = it.next().get();
             if (controller == null) {
@@ -445,11 +458,13 @@ final class ActionLauncherRevealFix {
             try {
                 Object device = deviceStateField.get(controller);
                 Object state = cachedKeyguardStateField.get(device);
-                if (Boolean.TRUE.equals(getCachedValue.invoke(state))) {
-                    // 先复位缓存（AL 的 LiveData 观察者若活跃会刷新开始时刻），
-                    // 再倒填开始时刻，确保门态一定是旧值。
+                boolean cachedLocked = Boolean.TRUE.equals(getCachedValue.invoke(state));
+                if (cachedLocked) {
                     setCachedValue.invoke(state, Boolean.FALSE);
-                    revealStartTimeField.setLong(controller, backdated);
+                }
+                if (cachedLocked || dreamUnlock) {
+                    // 缓存观察者可能刷新 E，因此最后写入本次入口需要的原生时刻。
+                    revealStartTimeField.setLong(controller, revealStart);
                 }
             } catch (Throwable error) {
                 logRuntimeErrorOnce(error);
@@ -460,11 +475,12 @@ final class ActionLauncherRevealFix {
         }
         if (DBG) {
             module.log(Log.INFO, TAG, "[dbg] USER_PRESENT flip done time=" + now
-                    + " E=" + backdated);
+                    + " E=" + revealStart
+                    + " dreamUnlock=" + dreamUnlock);
         }
     }
 
-    /** 模块接收器：RECEIVER_EXPORTED 注册 USER_PRESENT；AL 自身的注册收不到它。 */
+    /** 接收原生屏保周期与解锁信号，不改系统认证状态。 */
     private void attachUnlockReceiver(
             Context context, KeyguardManager keyguardManager) {
         if (!unlockReceiverAttached.compareAndSet(false, true)) {
@@ -474,18 +490,34 @@ final class ActionLauncherRevealFix {
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context unused, Intent data) {
-                    if (!ACTION_USER_PRESENT.equals(data.getAction())) {
-                        return;
-                    }
                     try {
-                        onUserPresent(keyguardManager);
+                        String action = data.getAction();
+                        if (Intent.ACTION_DREAMING_STARTED.equals(action)) {
+                            PowerManager power = context.getSystemService(PowerManager.class);
+                            boolean interactive = power.isInteractive();
+                            unlockCycle.onDreamStarted();
+                            if (DBG) {
+                                module.log(Log.INFO, TAG,
+                                        "[dbg] dream started interactive=" + interactive);
+                            }
+                        } else if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                            unlockCycle.onScreenOff();
+                            if (DBG) {
+                                module.log(Log.INFO, TAG, "[dbg] SCREEN_OFF waitingForUnlock="
+                                        + unlockCycle.waitingForUnlock());
+                            }
+                        } else if (ACTION_USER_PRESENT.equals(action)) {
+                            onUserPresent(keyguardManager);
+                        }
                     } catch (Throwable error) {
                         logRuntimeErrorOnce(error);
                     }
                 }
             };
-            context.registerReceiver(receiver,
-                    new IntentFilter(ACTION_USER_PRESENT), Context.RECEIVER_EXPORTED);
+            IntentFilter filter = new IntentFilter(ACTION_USER_PRESENT);
+            filter.addAction(Intent.ACTION_DREAMING_STARTED);
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
             module.log(Log.INFO, TAG, "Listening for Action Launcher unlock signal");
         } catch (Throwable error) {
             unlockReceiverAttached.set(false);
@@ -517,7 +549,7 @@ final class ActionLauncherRevealFix {
                 public void run() {
                     healTask = null;
                     try {
-                        if (healKeyguard.isKeyguardLocked()) {
+                        if (unlockCycle.waitingForUnlock() || healKeyguard.isKeyguardLocked()) {
                             return;
                         }
                         Boolean cached =
@@ -541,11 +573,9 @@ final class ActionLauncherRevealFix {
     }
 
     /**
-     * Home/back 把 AL 带回前台时调用（onNewIntent、主 Activity 的
-     * finishAfterTransition 均先于 onStart 执行）。若解锁广播尚未送达而锁屏
-     * 缓存仍为「已锁定」，则当场复位缓存并倒填 E，使随后的 onStart 正常调度
-     * reveal。消除 USER_PRESENT 投递与 Home-onStart 的竞态；解锁当刻
-     * （keyguard 仍在或无新 intent）不会进入这里，场景 1 的压制不受影响。
+     * 真正的 Home 回桌面入口复位锁屏缓存并倒填 E。若屏保解锁已复位缓存，
+     * 仍需在这里解除为解锁保留的原生 debounce。onStart 已跳过调度时沿用
+     * 原有补放路径，已调度时通过 pending 保留同一次原生动画。
      */
     public void healBeforeReentry() {
         Object healedController = null;
@@ -565,7 +595,7 @@ final class ActionLauncherRevealFix {
                 }
                 Object state = cachedKeyguardStateField.get(device);
                 Boolean cached = (Boolean) getCachedValue.invoke(state);
-                if (!Boolean.TRUE.equals(cached)) {
+                if (!Boolean.TRUE.equals(cached) && !unlockCycle.needsHomeReentry()) {
                     continue;
                 }
                 Context context = (Context) deviceContextField.get(device);
@@ -574,8 +604,10 @@ final class ActionLauncherRevealFix {
                 if (keyguardManager.isKeyguardLocked()) {
                     return;
                 }
-                setCachedValue.invoke(state, Boolean.FALSE);
-                revealStartTimeField.setLong(controller, now - 60_000L);
+                if (Boolean.TRUE.equals(cached)) {
+                    setCachedValue.invoke(state, Boolean.FALSE);
+                }
+                revealStartTimeField.setLong(controller, now - REENTRY_BACKDATE_MS);
                 healedController = controller;
                 if (raceHealLogged.compareAndSet(false, true)) {
                     module.log(Log.INFO, TAG,
@@ -593,6 +625,7 @@ final class ActionLauncherRevealFix {
         if (healedController == null || scheduleRevealMethod == null) {
             return;
         }
+        unlockCycle.reset();
         // 实测 Android 17 上该路径的 onStart 先于 onNewIntent 执行，AL 的锁屏
         // 缓存门已把 reveal 调度跳过。这里补放 AL 自己的那次调度（postDelayed
         // 之后调用的正是同一个方法），b() 钩子的 alpha0/pending 机制照常接管。

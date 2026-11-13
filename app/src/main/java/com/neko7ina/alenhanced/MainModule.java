@@ -15,7 +15,7 @@ import io.github.libxposed.api.XposedModule;
 public final class MainModule extends XposedModule {
     private static final String TAG = "ActionLauncherEnhanced";
     private static final String SYSTEM_UI_PACKAGE = "com.android.systemui";
-    private static final String ACTION_LAUNCHER_PACKAGE = "com.actionlauncher.playstore";
+    static final String ACTION_LAUNCHER_PACKAGE = "com.actionlauncher.playstore";
     private static final String HANDLER_CLASS =
             "com.android.wm.shell.transition.DefaultTransitionHandler";
     private static final AtomicBoolean SYSTEM_UI_INSTALLED = new AtomicBoolean();
@@ -32,7 +32,8 @@ public final class MainModule extends XposedModule {
             try {
                 ActionLauncherRevealFix revealFix = new ActionLauncherRevealFix(this);
                 revealFix.install(param.getClassLoader());
-                new ActionLauncherBackFix(this, revealFix::healBeforeReentry)
+                new ActionLauncherBackFix(this, revealFix::healBeforeReentry,
+                        new HomeAnimationFrameRate(this))
                         .install(param.getClassLoader());
             } catch (Throwable error) {
                 ACTION_LAUNCHER_INSTALLED.set(false);
@@ -68,11 +69,14 @@ public final class MainModule extends XposedModule {
 
         RuntimeAccess access = RuntimeAccess.create(classLoader);
         AtomicBoolean runtimeErrorLogged = new AtomicBoolean();
+        AodUnlockFix aodFix = createAodFix(classLoader, handler);
+        AtomicBoolean aodDisabled = new AtomicBoolean();
 
         hook(startAnimation)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
                     boolean adjusted = false;
+                    Integer originalFlags = null;
                     try {
                         RuntimeAccess.TransitionSnapshot snapshot =
                                 access.inspect(chain.getArg(1));
@@ -84,17 +88,63 @@ public final class MainModule extends XposedModule {
                                     chain.getArg(2),
                                     snapshot.openingWallpaperLeashes);
                         }
+                        if (aodFix != null && !aodDisabled.get()) {
+                            try {
+                                originalFlags = aodFix.prepare(
+                                        chain.getThisObject(), chain.getArg(1), snapshot);
+                            } catch (Throwable error) {
+                                aodDisabled.set(true);
+                                log(Log.ERROR, TAG,
+                                        "AOD animation adjustment disabled", error);
+                            }
+                        }
                     } catch (Throwable error) {
                         logRuntimeErrorOnce(runtimeErrorLogged, error);
                     }
 
-                    Object result = chain.proceed();
+                    Object result;
+                    try {
+                        result = chain.proceed();
+                    } finally {
+                        if (originalFlags != null) {
+                            try {
+                                aodFix.restore(chain.getArg(1), originalFlags);
+                            } catch (Throwable error) {
+                                aodDisabled.set(true);
+                                log(Log.ERROR, TAG,
+                                        "AOD transition flags could not be restored; adjustment disabled",
+                                        error);
+                            }
+                        }
+                    }
+                    if (originalFlags != null) {
+                        log(Log.INFO, TAG,
+                                "Requested native unlock animation for Action Launcher AOD wake"
+                                        + "; accepted=" + result);
+                    }
                     if (adjusted && Boolean.TRUE.equals(result)) {
                         log(Log.INFO, TAG,
                                 "Kept wallpaper visible for third-party Home transition");
                     }
                     return result;
                 });
+    }
+
+    private AodUnlockFix createAodFix(ClassLoader loader, Class<?> handler) {
+        try {
+            // Owner fields and native animation routing were verified on this build only.
+            if (!"CP3A.261005.005".equals(Build.ID)) {
+                log(Log.INFO, TAG, "AOD unlock adjustment disabled for unverified build");
+                return null;
+            }
+            AodUnlockFix fix = new AodUnlockFix(loader, handler,
+                    message -> log(Log.INFO, TAG, message));
+            log(Log.INFO, TAG, "AOD native unlock animation bindings ready");
+            return fix;
+        } catch (Throwable error) {
+            log(Log.ERROR, TAG, "AOD unlock adjustment unavailable; disabled", error);
+            return null;
+        }
     }
 
     private void logRuntimeErrorOnce(AtomicBoolean logged, Throwable error) {

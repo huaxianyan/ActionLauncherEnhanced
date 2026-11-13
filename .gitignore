@@ -7,3 +7,9 @@ local.properties
 *.jks
 *.keystore
 *.p12
+
+# DEX 解析工具，只用来定位混淆符号，与模块实现无关，不入库
+tools/dex/
+
+# 本地临时产物（构建日志、抓包解压、测量数据）
+.work/

@@ -1,5 +1,7 @@
 package com.neko7ina.alenhanced;
 
+import android.app.ActivityManager;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -65,6 +67,9 @@ final class RuntimeAccess {
         List<?> rawChanges = (List<?>) getChanges.invoke(transitionInfo);
         List<TransitionMatcher.ChangeFacts> facts = new ArrayList<>(rawChanges.size());
         List<Object> openingWallpaperLeashes = new ArrayList<>(1);
+        int taskCount = 0;
+        boolean actionLauncherHome = false;
+        int homeFlags = 0;
 
         for (Object change : rawChanges) {
             int mode = (int) getMode.invoke(change);
@@ -74,6 +79,19 @@ final class RuntimeAccess {
                     ? TransitionMatcher.NO_TASK
                     : topActivityType.getInt(taskInfo);
 
+            if (taskInfo != null) {
+                taskCount++;
+                ActivityManager.RunningTaskInfo task =
+                        (ActivityManager.RunningTaskInfo) taskInfo;
+                if (activityType == TransitionMatcher.ACTIVITY_TYPE_HOME
+                        && mode == TransitionMatcher.MODE_TO_FRONT
+                        && task.topActivity != null
+                        && MainModule.ACTION_LAUNCHER_PACKAGE.equals(
+                                task.topActivity.getPackageName())) {
+                    actionLauncherHome = true;
+                    homeFlags = flags;
+                }
+            }
             facts.add(new TransitionMatcher.ChangeFacts(mode, flags, activityType));
             if (TransitionMatcher.isOpening(mode)
                     && (flags & TransitionMatcher.FLAG_IS_WALLPAPER) != 0) {
@@ -81,7 +99,8 @@ final class RuntimeAccess {
             }
         }
 
-        return new TransitionSnapshot(transitionType, facts, openingWallpaperLeashes);
+        return new TransitionSnapshot(transitionType, facts, openingWallpaperLeashes,
+                taskCount == 1 && actionLauncherHome, homeFlags);
     }
 
     void keepVisible(Object transaction, List<Object> wallpaperLeashes)
@@ -106,14 +125,20 @@ final class RuntimeAccess {
         final int transitionType;
         final List<TransitionMatcher.ChangeFacts> changes;
         final List<Object> openingWallpaperLeashes;
+        final boolean onlyActionLauncherHome;
+        final int homeFlags;
 
         TransitionSnapshot(
                 int transitionType,
                 List<TransitionMatcher.ChangeFacts> changes,
-                List<Object> openingWallpaperLeashes) {
+                List<Object> openingWallpaperLeashes,
+                boolean onlyActionLauncherHome,
+                int homeFlags) {
             this.transitionType = transitionType;
             this.changes = changes;
             this.openingWallpaperLeashes = openingWallpaperLeashes;
+            this.onlyActionLauncherHome = onlyActionLauncherHome;
+            this.homeFlags = homeFlags;
         }
     }
 }

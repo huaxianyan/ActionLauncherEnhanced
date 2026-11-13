@@ -1,8 +1,10 @@
 package com.neko7ina.alenhanced;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.util.Log;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -36,19 +38,19 @@ final class ActionLauncherBackFix {
     private final XposedModule module;
     private final AtomicBoolean handledLogged = new AtomicBoolean();
     private final AtomicBoolean errorLogged = new AtomicBoolean();
+    private final AtomicBoolean homeErrorLogged = new AtomicBoolean();
 
     private Class<?> launcherActivityClass;
     private Method launcherOnBackPressed;
-    /** Home/back 回桌面入口的锁屏缓存复位（RevealFix 提供，可为 null）。 */
+    /** 仅在真正的 Home 回桌面入口复位锁屏缓存并按需补放（RevealFix 提供）。 */
     private final Runnable beforeReentry;
+    private final HomeAnimationFrameRate homeFrameRate;
 
-    ActionLauncherBackFix(XposedModule module) {
-        this(module, null);
-    }
-
-    ActionLauncherBackFix(XposedModule module, Runnable beforeReentry) {
+    ActionLauncherBackFix(XposedModule module, Runnable beforeReentry,
+            HomeAnimationFrameRate homeFrameRate) {
         this.module = module;
         this.beforeReentry = beforeReentry;
+        this.homeFrameRate = homeFrameRate;
     }
 
     void install(ClassLoader classLoader) throws ReflectiveOperationException {
@@ -69,7 +71,6 @@ final class ActionLauncherBackFix {
                         return chain.proceed();
                     }
                     try {
-                        runBeforeReentry();
                         launcherOnBackPressed.invoke(self);
                         if (handledLogged.compareAndSet(false, true)) {
                             module.log(Log.INFO, TAG,
@@ -90,14 +91,40 @@ final class ActionLauncherBackFix {
         try {
             // ey2 不覆写 onNewIntent（ek2 链上无声明）；实际实现在
             // com.actionlauncher.ActionLauncherActivity（非混淆，内部转发 hn0）。
+            // AL 53.0 onNewIntent 的原生条件：o0 && !FLAG_ACTIVITY_BROUGHT_TO_FRONT
+            // 表示已在桌面上的 Home 操作，可执行用户配置的打开抽屉等动作。
+            Field alreadyOnHome = launcherActivityClass.getDeclaredField("o0");
+            alreadyOnHome.setAccessible(true);
             Method onNewIntent = classLoader.loadClass(
                     "com.actionlauncher.ActionLauncherActivity")
-                    .getDeclaredMethod("onNewIntent", android.content.Intent.class);
+                    .getDeclaredMethod("onNewIntent", Intent.class);
             onNewIntent.setAccessible(true);
             module.hook(onNewIntent)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
-                        runBeforeReentry();
+                        try {
+                            Intent intent = (Intent) chain.getArg(0);
+                            boolean homeIntent = intent != null
+                                    && Intent.ACTION_MAIN.equals(intent.getAction())
+                                    && intent.hasCategory(Intent.CATEGORY_HOME);
+                            boolean broughtToFront = intent != null
+                                    && (intent.getFlags() & Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT) != 0;
+                            if (HomeReentryMatcher.shouldRepair(homeIntent,
+                                    alreadyOnHome.getBoolean(chain.getThisObject()), broughtToFront)) {
+                                beforeReentry.run();
+                            }
+                            if (homeIntent) {
+                                // 抽屉动画在本次 onNewIntent 内启动，先请求高刷再放行。
+                                homeFrameRate.requestForHomeAnimation(
+                                        (Activity) chain.getThisObject());
+                            }
+                        } catch (Throwable error) {
+                            if (homeErrorLogged.compareAndSet(false, true)) {
+                                module.log(Log.ERROR, TAG,
+                                        "Home re-entry check failed; leaving native Home action unchanged",
+                                        error);
+                            }
+                        }
                         return chain.proceed();
                     });
         } catch (Throwable error) {
@@ -108,14 +135,4 @@ final class ActionLauncherBackFix {
         module.log(Log.INFO, TAG, "Action Launcher back hook installed");
     }
 
-    private void runBeforeReentry() {
-        if (beforeReentry == null) {
-            return;
-        }
-        try {
-            beforeReentry.run();
-        } catch (Throwable ignored) {
-            // 复位失败时由接收器兑底，不阻断回桌面路径。
-        }
-    }
 }

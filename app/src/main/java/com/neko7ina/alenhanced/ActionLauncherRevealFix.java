@@ -58,9 +58,17 @@ final class ActionLauncherRevealFix {
      */
     private static final long UNLOCK_HEAL_DELAY_MS = 1000L;
     private static final long REENTRY_BACKDATE_MS = 60_000L;
+    /** onStart 距上次解锁超过这个间隔，AL 就认为不该播放显现动画。 */
+    private static final long ON_START_STALE_MS = 2_000L;
+    /** 解锁信号必须紧接那次被放弃的 onStart，避免迟到信号触发二次播放。 */
+    private static final long UNLOCK_REPLAY_WINDOW_MS = 300L;
 
     private final XposedModule module;
     private final AtomicBoolean delayedOnStartPending = new AtomicBoolean();
+    /** 解锁补放的现场记录：只认「onStart 因缓存过期放弃 reveal」的那一次。 */
+    private volatile Object lastOnStartController;
+    private volatile long lastOnStartAt;
+    private volatile boolean lastOnStartSuppressed;
     private final AtomicBoolean runtimeErrorLogged = new AtomicBoolean();
     private final AtomicBoolean appliedLogged = new AtomicBoolean();
     private final AtomicBoolean homeTimingLogged = new AtomicBoolean();
@@ -211,6 +219,11 @@ final class ActionLauncherRevealFix {
                                         "[dbg] preserved dream/AOD unlock cache");
                             }
                         }
+                        lastOnStartController = chain.getThisObject();
+                        lastOnStartAt = System.currentTimeMillis();
+                        lastOnStartSuppressed = cachedLocked && !actualLocked
+                                && lastOnStartAt - revealStartTimeField.getLong(
+                                        chain.getThisObject()) > ON_START_STALE_MS;
                         if (cachedLocked == actualLocked) {
                             // 缓存与实际一致，不干预。
                         } else if (cachedLocked && !actualLocked) {
@@ -470,6 +483,9 @@ final class ActionLauncherRevealFix {
                 logRuntimeErrorOnce(error);
             }
         }
+        if (dreamUnlock) {
+            replaySkippedUnlockReveal(now);
+        }
         if (earlyRestoreLogged.compareAndSet(false, true)) {
             module.log(Log.INFO, TAG, "Restored Action Launcher unlock state early");
         }
@@ -477,6 +493,39 @@ final class ActionLauncherRevealFix {
             module.log(Log.INFO, TAG, "[dbg] USER_PRESENT flip done time=" + now
                     + " E=" + revealStart
                     + " dreamUnlock=" + dreamUnlock);
+        }
+    }
+
+    /**
+     * 指纹在 AOD/屏保上直接解锁时，AL 的 onStart 会因为锁屏缓存仍写着「已锁定」
+     * 且上次解锁时刻过旧而整段放弃 reveal 调度（实测该时段没有任何 b() 调用），
+     * 系统也没有 WAKE 过渡，桌面就是硬切出现。这里按 Home 补放同样的保护补一次。
+     *
+     * <p>三重限制，缺一不补：那次 onStart 确实因缓存过期放弃；原生没有调度
+     * （pending 未置位）；解锁信号距那次 onStart 不超过 300 毫秒。
+     */
+    private void replaySkippedUnlockReveal(long now) {
+        Object controller = lastOnStartController;
+        if (controller == null || !lastOnStartSuppressed || scheduleRevealMethod == null) {
+            return;
+        }
+        if (now - lastOnStartAt > UNLOCK_REPLAY_WINDOW_MS) {
+            return;
+        }
+        if (!delayedOnStartPending.compareAndSet(false, true)) {
+            if (DBG) {
+                module.log(Log.INFO, TAG,
+                        "[dbg] unlock replay skip; scheduling already pending");
+            }
+            return;
+        }
+        lastOnStartSuppressed = false;
+        try {
+            scheduleRevealMethod.invoke(controller, 160L, ON_START_SOURCE);
+            module.log(Log.INFO, TAG, "Replayed skipped reveal after unlock");
+        } catch (Throwable error) {
+            delayedOnStartPending.set(false);
+            logRuntimeErrorOnce(error);
         }
     }
 

@@ -43,8 +43,8 @@ android {
         applicationId = "com.neko7ina.alenhanced"
         minSdk = 35
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.6.0"
+        versionCode = 11
+        versionName = "0.6.2"
     }
 
     compileOptions {

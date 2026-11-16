@@ -17,6 +17,24 @@
 - [第三方资源](../THIRD_PARTY_NOTICES.md)：资源来源与许可。
 - 机器、设备和本地操作约定见本地 `AGENTS.md`。
 
+## STATUS-033：`Unexpected transit type: 3` 的出处与判定条件
+
+- 日期：2026-11-17。静态分析 SystemUI `classes.dex`（Android 17 `CP3A.261005.005`）。
+- 该日志来自 `Lcom/android/systemui/keyguard/KeyguardService$1;->startAnimation(...)`，
+  即 **SurfaceBehind 的 RemoteTransitionStub**，不是 `KeyguardTransitionHandler` 本体。
+- 判定逻辑（dexdump 反汇编）：
+  - `type = info.getType()`，`flags = info.getFlags()`；
+  - 接受条件：`type == 7`，或 `(flags & 0x100) != 0`，或 `type == 8`，或 `type == 9`；
+  - 其它情况打印 `Unexpected transit type: <type>`，随后按数组与 `topActivityType`
+    推导一个整数（22 / 23 / 33）继续走完流程，**不做任何 surface-behind 动画**。
+- 现场两条过渡都是 `type = 3（TO_FRONT）`、`flags = 0x800`，两个条件都不满足，
+  因此 keyguard 侧直接放弃动画；该过渡 4 毫秒结束，桌面随后直接出现。
+- 含义：这不是「动画被谁挡住」，而是这条过渡形状根本不是 keyguard 退场/唤醒，
+  而是「锁屏出现」类型；AOD pulsing 上直接指纹解锁时，系统先短暂把锁屏当成出现，
+  再切到 gone。要让动画恢复，得查清楚 WM/ATMS 为何在这个路径上发出
+  `TO_FRONT + 0x800`，而不是唤醒类过渡。
+- 未改动代码或设备设置。
+
 ## STATUS-032：解锁补放方向错误，已回退（0.6.2）
 
 - 日期：2026-11-16。用户实测 0.6.1 后反馈：解锁动画变成「从应用返回桌面」的形状

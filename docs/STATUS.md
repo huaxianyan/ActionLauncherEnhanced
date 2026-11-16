@@ -17,23 +17,6 @@
 - [第三方资源](../THIRD_PARTY_NOTICES.md)：资源来源与许可。
 - 机器、设备和本地操作约定见本地 `AGENTS.md`。
 
-## STATUS-031：解锁路径补放被放弃的 reveal（0.6.1）
-
-- 日期：2026-11-15。按 STATUS-030 的方案实现，版本升到 `0.6.1 / 10`。
-- 触发条件（缺一不补）：
-  - 该次 `onStart` 的锁屏缓存仍为「已锁定」，且距上次解锁超过 2 秒
-    （`ON_START_STALE_MS`），即 AL 自己放弃 reveal 的那一次；
-  - `delayedOnStartPending` 未置位，说明原生确实没有调度；
-  - `USER_PRESENT` 距该次 `onStart` 不超过 300 毫秒（`UNLOCK_REPLAY_WINDOW_MS`），
-    防止迟到信号造成二次播放；
-  - 仅对 `dreamUnlock`（AOD/屏保解锁）生效。
-- 补放内容与 Home 路径相同：反射调用 AL 自己的 `b(160L, "onStart()")`，不新增动画。
-- 成功时打一条 `Replayed skipped reveal after unlock`；正常解锁因 pending 已置位
-  会打 `[dbg] unlock replay skip; scheduling already pending`。
-- 已装机（Release 证书签名的 `0.6.1 / 10`），AL 进程已重启，钩子安装无报错。
-- 待验证：真实 AOD 直接指纹解锁时是否出现补放日志且观感为淡入，
-  以及正常解锁是否保持不重复播放。
-
 ## STATUS-030：解锁后无桌面动画——原生无过渡动画，且 AL 自己的 reveal 被旧缓存跳过
 
 - 日期：2026-11-15 23:05:36。现场包 `scene-20261115-230540-951`（「解锁现场记录」0.1.2）。

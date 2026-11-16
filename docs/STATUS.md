@@ -17,6 +17,28 @@
 - [第三方资源](../THIRD_PARTY_NOTICES.md)：资源来源与许可。
 - 机器、设备和本地操作约定见本地 `AGENTS.md`。
 
+## STATUS-030：解锁后无桌面动画——原生无过渡动画，且 AL 自己的 reveal 被旧缓存跳过
+
+- 日期：2026-11-15 23:05:36。现场包 `scene-20261115-230540-951`（「解锁现场记录」0.1.2）。
+  指纹在 AOD pulsing 上直接解锁：`DOZE_REQUEST_PULSE → DOZE_PULSING`，
+  `calculateModeForFingerprint … deviceDreaming=true` → `startWakeAndUnlock(MODE_WAKE_AND_UNLOCK_PULSING)`，
+  .670 `keyguardDone`、.673 场景 lockscreen→gone。用户观感：解锁后桌面直接出现，没有动画。
+- 系统侧（Windows/`WindowManagerShell`）：只有一条过渡 `#1345 t=TO_FRONT f=0x800`
+  （锁屏出现类型），由 `KeyguardTransitionHandler` 接管，日志 `Unexpected transit type: 3`，
+  .862 开始、.866 结束，4 ms 完成；**全程没有 WAKE 过渡**。与 STATUS-023 的形态一致。
+- AL 侧：.811 `onStart cached=true actual=false E=1794754826429 now=1794755136811`
+  —— E 比 onStart 早 310 秒，AL 的原生 debounce 不成立，因此**压根没有调用 `b()`**
+  （该时段模块日志里没有任何 `b()` 或 reveal 记录）；.857 `USER_PRESENT flip` 才把缓存
+  复位并把 E 写成当前时刻，但那时 onStart 已经过去，没人补放。
+- 结论：这一现象有两个独立缺口——系统没有 WAKE 过渡（模块未介入，也不该伪造过渡），
+  以及解锁路径没有补放 AL 自己的 reveal 调度。现有补放只存在于 Home 回桌面入口
+  （`healBeforeReentry`），纯解锁路径没有。
+- 可选修复（待用户决定）：在 `onUserPresent` 完成缓存复位后，若 `delayedOnStartPending`
+  未置位（原生确实没调度），按 Home 路径同样的保护调用
+  `scheduleRevealMethod.invoke(controller, 160L, ON_START_SOURCE)`。
+  风险：补放发生在解锁后约 200 ms，观感会是「桌面稍晚淡入」而非与系统过渡同步；
+  正常解锁（原生已调度）因 pending 已置位不会重复。
+
 ## STATUS-029：发布 0.6.0
 
 - 日期：2026-11-07。自 0.3.2 以来累积的改动一并发布，版本 `0.6.0 / 9`。
